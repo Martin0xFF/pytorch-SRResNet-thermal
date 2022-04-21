@@ -1,6 +1,13 @@
+'''
+Modified by Martin F.
+2022. 04, 20
+- added ConvTransposed2d to accept (120, 160) images and produce exactly (512, 640) size images
+'''
 import torch
 import torch.nn as nn
 import math
+
+from torch.nn.modules import padding
 
 class _Residual_Block(nn.Module):
     def __init__(self):
@@ -17,15 +24,15 @@ class _Residual_Block(nn.Module):
         output = self.relu(self.in1(self.conv1(x)))
         output = self.in2(self.conv2(output))
         output = torch.add(output,identity_data)
-        return output 
+        return output
 
 class _NetG(nn.Module):
     def __init__(self):
         super(_NetG, self).__init__()
 
-        self.conv_input = nn.Conv2d(in_channels=3, out_channels=64, kernel_size=9, stride=1, padding=4, bias=False)
+        self.conv_input = nn.Conv2d(in_channels=1, out_channels=64, kernel_size=9, stride=1, padding=4, bias=False)
         self.relu = nn.LeakyReLU(0.2, inplace=True)
-        
+
         self.residual = self.make_layer(_Residual_Block, 16)
 
         self.conv_mid = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False)
@@ -38,10 +45,13 @@ class _NetG(nn.Module):
             nn.Conv2d(in_channels=64, out_channels=256, kernel_size=3, stride=1, padding=1, bias=False),
             nn.PixelShuffle(2),
             nn.LeakyReLU(0.2, inplace=True),
+            nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=(7, 3), dilation=(2,1),padding=(0,1)),
+            nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=(7, 3), dilation=(2,1),padding=(0,1)),
+            nn.ConvTranspose2d(in_channels=64, out_channels=64, kernel_size=(5, 3), dilation=(2,1),padding=(0,1)),
         )
 
-        self.conv_output = nn.Conv2d(in_channels=64, out_channels=3, kernel_size=9, stride=1, padding=4, bias=False)
-        
+        self.conv_output = nn.Conv2d(in_channels=64, out_channels=1, kernel_size=9, stride=1, padding=4, bias=False)
+
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
                 n = m.kernel_size[0] * m.kernel_size[1] * m.out_channels
@@ -70,21 +80,21 @@ class _NetD(nn.Module):
         super(_NetD, self).__init__()
 
         self.features = nn.Sequential(
-        
+
             # input is (3) x 96 x 96
             nn.Conv2d(in_channels=3, out_channels=64, kernel_size=3, stride=1, padding=1, bias=False),
             nn.LeakyReLU(0.2, inplace=True),
 
             # state size. (64) x 96 x 96
-            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, bias=False),            
+            nn.Conv2d(in_channels=64, out_channels=64, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.LeakyReLU(0.2, inplace=True),
 
             # state size. (64) x 96 x 96
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1, bias=False),            
+            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(128),
             nn.LeakyReLU(0.2, inplace=True),
-            
+
             # state size. (64) x 48 x 48
             nn.Conv2d(in_channels=128, out_channels=128, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(128),
@@ -101,12 +111,12 @@ class _NetD(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
 
             # state size. (256) x 12 x 12
-            nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=1, padding=1, bias=False),            
+            nn.Conv2d(in_channels=256, out_channels=512, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
 
             # state size. (512) x 12 x 12
-            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=4, stride=2, padding=1, bias=False),            
+            nn.Conv2d(in_channels=512, out_channels=512, kernel_size=4, stride=2, padding=1, bias=False),
             nn.BatchNorm2d(512),
             nn.LeakyReLU(0.2, inplace=True),
         )

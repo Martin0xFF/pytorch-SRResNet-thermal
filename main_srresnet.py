@@ -1,11 +1,25 @@
+'''
+Modified by Martin F.
+2022, 04, 20
+- added FlirSet and FlirSetFromFolder data loader
+- modified default values for training
+- added validation step function
+- picked fixed seed
+- used default version of MSELoss
+- adding logging to training
+'''
 import argparse, os
+from pathlib import Path
+from torchvision.transforms import ToTensor
+from PIL import Image
+
 import torch
 import math, random
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
 import torch.optim as optim
 from torch.autograd import Variable
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from srresnet import _NetG
 from dataset import DatasetFromHdf5
 from torchvision import models
@@ -25,6 +39,51 @@ parser.add_argument("--pretrained", default="", type=str, help="path to pretrain
 parser.add_argument("--vgg_loss", action="store_true", help="Use content loss?")
 parser.add_argument("--gpus", default="0", type=str, help="gpu ids (default: 0)")
 
+parser.add_argument("--data_path", default='./data/flir/images_thermal_train')
+parser.add_argument("--val_path", default='./data/flir/images_thermal_val')
+parser.add_argument("--input_name", default='small')
+parser.add_argument("--target_name", default='data')
+parser.add_argument("--log", default='train_log.txt')
+parser.add_argument("--val_log", default='val_log.txt')
+
+class FlirSet(Dataset):
+    def __init__(self, data_paths, label_paths, transform=None, target_transform=None):
+        self.data_paths = data_paths
+        self.target_paths = label_paths
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __getitem__(self, index):
+        x = Image.open(self.data_paths[index]).convert('L')
+        if self.transform:
+            x = self.transform(x)
+        y = Image.open(self.target_paths[index]).convert('L')
+        if self.target_transform:
+            y = self.target_transform(y)
+
+        return x, y
+
+    def __len__(self):
+        return len(self.data_paths)
+
+def FlirSetFromFolder(root_path, target_name='data', input_name='small', transform=None, target_transform=None):
+    if transform is None:
+        transform = ToTensor()
+    if target_transform is None:
+        target_transform = ToTensor()
+
+    pl_input = Path(os.path.join(root_path, input_name))
+    pl_target = Path(os.path.join(root_path, target_name))
+
+    input_paths = []
+    target_paths = []
+
+    for pl_in, pl_ta in zip(pl_input.iterdir(), pl_target.iterdir()):
+        input_paths.append(str(pl_in.absolute()))
+        target_paths.append(str(pl_ta.absolute()))
+
+    return FlirSet(input_paths, target_paths, transform=transform, target_transform=target_transform)
+
 def main():
 
     global opt, model, netContent
@@ -38,7 +97,7 @@ def main():
         if not torch.cuda.is_available():
                 raise Exception("No GPU found or Wrong gpu id, please run without --cuda")
 
-    opt.seed = random.randint(1, 10000)
+    opt.seed = 6969
     print("Random Seed: ", opt.seed)
     torch.manual_seed(opt.seed)
     if cuda:
@@ -47,8 +106,12 @@ def main():
     cudnn.benchmark = True
 
     print("===> Loading datasets")
-    train_set = DatasetFromHdf5("/path/to/your/hdf5/data/like/rgb_srresnet_x4.h5")
+    train_set = FlirSetFromFolder(opt.data_path,target_name=opt.target_name, input_name=opt.input_name) # DatasetFromHdf5("/path/to/your/hdf5/data/like/rgb_srresnet_x4.h5")
     training_data_loader = DataLoader(dataset=train_set, num_workers=opt.threads, \
+        batch_size=opt.batchSize, shuffle=True)
+
+    val_set = FlirSetFromFolder(opt.val_path,target_name=opt.target_name, input_name=opt.input_name)
+    val_data_loader = DataLoader(dataset=val_set, num_workers=opt.threads, \
         batch_size=opt.batchSize, shuffle=True)
 
     if opt.vgg_loss:
@@ -59,7 +122,7 @@ def main():
             def __init__(self):
                 super(_content_model, self).__init__()
                 self.feature = nn.Sequential(*list(netVGG.features.children())[:-1])
-                
+
             def forward(self, x):
                 out = self.feature(x)
                 return out
@@ -68,14 +131,14 @@ def main():
 
     print("===> Building model")
     model = _NetG()
-    criterion = nn.MSELoss(size_average=False)
+    criterion = nn.MSELoss()
 
     print("===> Setting GPU")
     if cuda:
         model = model.cuda()
         criterion = criterion.cuda()
         if opt.vgg_loss:
-            netContent = netContent.cuda() 
+            netContent = netContent.cuda()
 
     # optionally resume from a checkpoint
     if opt.resume:
@@ -101,56 +164,89 @@ def main():
 
     print("===> Training")
     for epoch in range(opt.start_epoch, opt.nEpochs + 1):
-        train(training_data_loader, optimizer, model, criterion, epoch)
+        train(training_data_loader, optimizer, model, criterion, epoch, opt.log)
+        val(val_data_loader, optimizer, model, criterion, epoch, opt.val_log)
         save_checkpoint(model, epoch)
 
 def adjust_learning_rate(optimizer, epoch):
     """Sets the learning rate to the initial LR decayed by 10"""
     lr = opt.lr * (0.1 ** (epoch // opt.step))
-    return lr 
+    return lr
 
-def train(training_data_loader, optimizer, model, criterion, epoch):
+def val(training_data_loader, optimizer, model, criterion, epoch, log):
+    print("Validation")
+    print("Epoch={}, lr={}".format(epoch, optimizer.param_groups[0]["lr"]))
+    model.train()
+    with torch.no_grad():
+        with open(log, 'a') as log_file:
+            for iteration, batch in enumerate(training_data_loader, 1):
+                input, target = Variable(batch[0]), Variable(batch[1], requires_grad=False)
+                if opt.cuda:
+                    input = input.cuda()
+                    target = target.cuda()
+
+                output = model(input)
+                loss = criterion(output, target)
+
+                if opt.vgg_loss:
+                    content_input = netContent(output)
+                    content_target = netContent(target)
+                    content_target = content_target.detach()
+                    content_loss = criterion(content_input, content_target)
+
+                if opt.vgg_loss:
+                    netContent.zero_grad()
+                    content_loss.backward(retain_graph=True)
+
+                if iteration%50 == 0:
+                    if opt.vgg_loss:
+                        print("===> Epoch[{}]({}/{}): Loss: {:.5} Content_loss {:.5}".format(epoch, iteration, len(training_data_loader), loss.item(), content_loss.data[0]))
+                    else:
+                        print("===> Epoch[{}]({}/{}): Loss: {:.5}".format(epoch, iteration, len(training_data_loader), loss.item()))
+                    log_file.write(f"{epoch},{iteration},{loss.item()}\n")
+
+def train(training_data_loader, optimizer, model, criterion, epoch, log):
 
     lr = adjust_learning_rate(optimizer, epoch-1)
-    
+
     for param_group in optimizer.param_groups:
         param_group["lr"] = lr
 
     print("Epoch={}, lr={}".format(epoch, optimizer.param_groups[0]["lr"]))
     model.train()
 
-    for iteration, batch in enumerate(training_data_loader, 1):
+    with open(log, 'a') as log_file:
+        for iteration, batch in enumerate(training_data_loader, 1):
+            input, target = Variable(batch[0]), Variable(batch[1], requires_grad=False)
+            if opt.cuda:
+                input = input.cuda()
+                target = target.cuda()
 
-        input, target = Variable(batch[0]), Variable(batch[1], requires_grad=False)
+            output = model(input)
+            loss = criterion(output, target)
 
-        if opt.cuda:
-            input = input.cuda()
-            target = target.cuda()
-
-        output = model(input)
-        loss = criterion(output, target)
-
-        if opt.vgg_loss:
-            content_input = netContent(output)
-            content_target = netContent(target)
-            content_target = content_target.detach()
-            content_loss = criterion(content_input, content_target)
-
-        optimizer.zero_grad()
-
-        if opt.vgg_loss:
-            netContent.zero_grad()
-            content_loss.backward(retain_graph=True)
-
-        loss.backward()
-
-        optimizer.step()
-
-        if iteration%100 == 0:
             if opt.vgg_loss:
-                print("===> Epoch[{}]({}/{}): Loss: {:.5} Content_loss {:.5}".format(epoch, iteration, len(training_data_loader), loss.data[0], content_loss.data[0]))
-            else:
-                print("===> Epoch[{}]({}/{}): Loss: {:.5}".format(epoch, iteration, len(training_data_loader), loss.data[0]))
+                content_input = netContent(output)
+                content_target = netContent(target)
+                content_target = content_target.detach()
+                content_loss = criterion(content_input, content_target)
+
+            optimizer.zero_grad()
+
+            if opt.vgg_loss:
+                netContent.zero_grad()
+                content_loss.backward(retain_graph=True)
+
+            loss.backward()
+
+            optimizer.step()
+
+            if iteration%200 == 0:
+                if opt.vgg_loss:
+                    print("===> Epoch[{}]({}/{}): Loss: {:.5} Content_loss {:.5}".format(epoch, iteration, len(training_data_loader), loss.item(), content_loss.data[0]))
+                else:
+                    print("===> Epoch[{}]({}/{}): Loss: {:.5}".format(epoch, iteration, len(training_data_loader), loss.item()))
+                log_file.write(f"{epoch},{iteration},{loss.item()}\n")
 
 def save_checkpoint(model, epoch):
     model_out_path = "checkpoint/" + "model_epoch_{}.pth".format(epoch)
