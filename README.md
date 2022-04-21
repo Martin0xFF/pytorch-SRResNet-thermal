@@ -1,3 +1,40 @@
+# SRResNet for Thermal Image Upsampling
+
+## Premise
+Thermal imaging cameras are expensive, particularly for larger resolution (typical ADS thermal cameras are 512x640). Using an upsampling method may allow for the use of low resolution images as input to produce a feasible larger resolution image. The use of SRResNet in this case would therefore act as a baseline utilized against generative methods.
+
+## Modification
+The SRResNet implementation was modified to accept (120, 160) images and directly produce (512, 640) images. This modification can be seen in the main_srresnt.py file.
+
+## Usage
+
+In order to run the model for training you will need to use a GPU with atleast 12 GB vram.
+
+Create a symbolic link to the flir thermal image data set within the data folder called flir
+
+```
+sudo ln -s ${FLIR_DATASET_FOLDER} data/flir
+```
+
+To train the model use the following command:
+```
+python main_srresnet.py --cuda --batchSize 8 --threads 12 
+```
+Here we use cuda with an image batchsize of 8 and 12 threads for dataloading.
+
+During training the model will create a val_log file and train_log file which will have the losses of the model.
+
+## Evalutation
+
+We can run the following command to run the model on a collection of images to upscale.
+```
+python demo.py --cuda --model checkpoint/latest.pth --save_root out --dataset data/flir/video_thermal_test
+```
+
+This will save the images to a folder called out where they can be viewed and compared to the original and ground truth images in video_thermal_test.
+
+---
+
 # PyTorch SRResNet
 Implementation of Paper: "Photo-Realistic Single Image Super-Resolution Using a Generative Adversarial Network"(https://arxiv.org/abs/1609.04802) in PyTorch
 
